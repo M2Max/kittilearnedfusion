@@ -35,7 +35,6 @@ def load_model():
     num_classes = 4  # 3 classes (car, pedestrian, cyclist) + background
     # get number of input features for the classifier
     in_features = model.roi_heads.box_predictor.cls_score.in_features
-    print(in_features)
     # replace the pre-trained head with a new one
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
@@ -92,7 +91,6 @@ def train_config():
 def train():
     model, optimizer, lr_scheduler = train_config()
     data_loader, data_loader_test = prepare_data()
-    """
     for epoch in range(NUM_EPOCHS):
         # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, DEVICE, epoch, print_freq=10)
@@ -102,6 +100,6 @@ def train():
         evaluate(model, data_loader_test, device=DEVICE)
         WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), WEIGHTS)             # sovrascritto a ogni epoca: un crash non perde tutto
-    """
-if __name__ == "__main__":                                  # i worker del DataLoader reimportano il modulo
+
+if __name__ == "__main__":                                
     train()
