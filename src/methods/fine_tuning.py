@@ -19,8 +19,8 @@ DEVICE = torch.accelerator.current_accelerator() if torch.accelerator.is_availab
 LEARNING_RATE=0.005
 MOMENTUM=0.9
 WEIGHT_DECAY=0.0005
-NUM_EPOCHS = 5
-STEP_SIZE=3
+NUM_EPOCHS = 10
+STEP_SIZE=8
 GAMMA=0.1
 BATCH_SIZE = 16
 NUM_WORKERS = 8                                             # processi che decodificano i PNG
@@ -30,11 +30,12 @@ WEIGHTS = RESULTS / "cache" / "c2_fasterrcnn.pt"            # pesi del modello f
 
 def load_model():
     # load a model pre-trained on COCO
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT")
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT", min_size=560, max_size=1860)
 
     num_classes = 4  # 3 classes (car, pedestrian, cyclist) + background
     # get number of input features for the classifier
     in_features = model.roi_heads.box_predictor.cls_score.in_features
+    print(in_features)
     # replace the pre-trained head with a new one
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
@@ -91,6 +92,7 @@ def train_config():
 def train():
     model, optimizer, lr_scheduler = train_config()
     data_loader, data_loader_test = prepare_data()
+    """
     for epoch in range(NUM_EPOCHS):
         # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, DEVICE, epoch, print_freq=10)
@@ -100,6 +102,6 @@ def train():
         evaluate(model, data_loader_test, device=DEVICE)
         WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), WEIGHTS)             # sovrascritto a ogni epoca: un crash non perde tutto
-
+    """
 if __name__ == "__main__":                                  # i worker del DataLoader reimportano il modulo
     train()
