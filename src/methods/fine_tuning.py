@@ -16,6 +16,8 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 # train with mps or CUDA based on what machine I run it, fallback to cpu
 DEVICE = torch.accelerator.current_accelerator() if torch.accelerator.is_available() else torch.device('cpu')
+MIN_SIZE=560
+MAX_SIZE=1860
 LEARNING_RATE=0.005
 MOMENTUM=0.9
 WEIGHT_DECAY=0.0005
@@ -30,7 +32,7 @@ WEIGHTS = RESULTS / "cache" / "c2_fasterrcnn.pt"            # pesi del modello f
 
 def load_model():
     # load a model pre-trained on COCO
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT", min_size=560, max_size=1860)
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT", min_size=MIN_SIZE, max_size=MAX_SIZE)
 
     num_classes = 4  # 3 classes (car, pedestrian, cyclist) + background
     # get number of input features for the classifier
