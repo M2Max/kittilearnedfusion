@@ -13,7 +13,7 @@ from evaluation.iou import iou_3d
 from evaluation.result_analysis import analyze_run, load_run, make_sensor_video, save_run
 from kitti.data import frame_ids, load_calib, load_lidar
 from kitti.ground_truth import gt_boxes
-from methods import clocs
+from methods import camera_stereo, clocs
 
 
 def lidar_cloud(i):
@@ -21,6 +21,7 @@ def lidar_cloud(i):
 
 
 METHODS = {                                                 # metodo -> (detect, nuvola per grafici e video)
+    "C2-s": (camera_stereo.detect, lidar_cloud),            # solo camera: box 2D di C2 portati in 3D con lo stereo
     "FL-n": (clocs.detect, lidar_cloud),                    # fusione tardiva appresa: candidati L2 + box 2D di C2
 }
 
