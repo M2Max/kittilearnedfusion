@@ -13,7 +13,7 @@ from evaluation.confusion import confusion_matrix, plot_confusion
 from evaluation.iou import iou_3d, iou_bev
 from evaluation.result_analysis import collect, load_run, save_fig, setup_style, summary_table
 
-ORDER = ["L1", "C1", "FE", "FM", "FL-c", "L2"]               # ordine delle righe; metodi sconosciuti in fondo
+ORDER = ["L1", "C1", "FE", "FM", "FL-c", "L2", "FL-n"]       # ordine delle righe; metodi sconosciuti in fondo
 
 
 def find_runs(split):

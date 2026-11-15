@@ -11,10 +11,18 @@ from config import RESULTS
 from evaluation.confusion import confusion_matrix, save_confusion
 from evaluation.iou import iou_3d
 from evaluation.result_analysis import analyze_run, load_run, make_sensor_video, save_run
-from kitti.data import frame_ids, load_calib
+from kitti.data import frame_ids, load_calib, load_lidar
 from kitti.ground_truth import gt_boxes
+from methods import clocs
 
-METHODS = {}                                                # metodo -> (detect, nuvola per grafici e video)
+
+def lidar_cloud(i):
+    return load_lidar(i)[:, :3]                             # x, y, z (senza riflettanza)
+
+
+METHODS = {                                                 # metodo -> (detect, nuvola per grafici e video)
+    "FL-n": (clocs.detect, lidar_cloud),                    # fusione tardiva appresa: candidati L2 + box 2D di C2
+}
 
 
 def run_frame(method, i):
