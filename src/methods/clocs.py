@@ -82,33 +82,60 @@ def iou_2d(a, b):
 
 # ================================================================ feature delle coppie
 
+FEATURES = ["class", "probs", "points", "height", "ratio", "cross"]   # opzionali, oltre alle 4 di base
+N_COLUMNS = {"class": 3, "probs": 4, "points": 1, "height": 1, "ratio": 1, "cross": 1}
+
 def decode_candidates(cand, cand_classes):
     # classe = oggetto più probabile (0 è lo sfondo), score 3D = sua probabilità, come in L2
     finite = np.isfinite(cand["boxes"]).all(axis=1)         # 2 candidati di val hanno box non finiti
     boxes, probs = cand["boxes"][finite], cand["probs"][finite]
     best = 1 + np.argmax(probs[:, 1:], axis=1)
-    return boxes, [cand_classes[k] for k in best], probs[np.arange(len(best)), best]
+    return {"boxes": boxes, "classes": [cand_classes[k] for k in best], "s3d": probs[np.arange(len(best)), best],
+            "probs": probs, "n_points": cand["n_points"][finite]}
 
-def frame_pairs(boxes, classes, s3d, calib, size, det2d):
-    # per ogni candidato le righe [IoU 2D, score 2D, score 3D, distanza]: una per box 2D della stessa classe che
-    # si sovrappone al candidato proiettato, oppure una sola riga [-1, -1, score 3D, distanza] se non ce ne sono
+def n_inputs(features):
+    return 4 + sum(N_COLUMNS[f] for f in features)
+
+def frame_pairs(cand, calib, size, det2d, features=()):
+    # per ogni candidato le righe [IoU 2D, score 2D, score 3D, distanza, opzionali]: una per box 2D che si sovrappone
+    # al candidato proiettato (della stessa classe, o di ogni classe con "cross"), altrimenti una sola riga con
+    # IoU e score 2D a -1
+    boxes, classes, s3d = cand["boxes"], np.array(cand["classes"]), cand["s3d"]
     d_boxes, d_classes, d_scores = det2d
-    ious = iou_2d(project_boxes(boxes, calib, size), d_boxes)
-    ious *= np.array(classes)[:, None] == d_classes[None, :]   # coppie solo fra classi uguali
+    proj = project_boxes(boxes, calib, size)
+    ious = iou_2d(proj, d_boxes)
+    same = classes[:, None] == d_classes[None, :]
+    if "cross" not in features:
+        ious *= same                                        # coppie solo fra classi uguali
     dist = np.hypot(boxes[:, 0], boxes[:, 1]) / MAX_DIST
+    d_height = d_boxes[:, 3] - d_boxes[:, 1]
+    p_height = proj[:, 3] - proj[:, 1]
     pairs = []
     for k in range(len(boxes)):
         j = np.flatnonzero(ious[k] > 0)
-        if len(j):
-            pairs.append(np.c_[ious[k, j], d_scores[j], np.full(len(j), s3d[k]), np.full(len(j), dist[k])])
-        else:
-            pairs.append(np.array([[EMPTY, EMPTY, s3d[k], dist[k]]]))
+        n = max(len(j), 1)
+        cols = [np.c_[ious[k, j], d_scores[j]] if len(j) else np.full((1, 2), EMPTY),
+                np.full((n, 1), s3d[k]), np.full((n, 1), dist[k])]
+        if "class" in features:
+            cols.append(np.tile([classes[k] == c for c in CLASSES], (n, 1)))   # stessa rete, regole diverse per classe
+        if "probs" in features:
+            cols.append(np.tile(cand["probs"][k], (n, 1)))  # tutte le probabilità di L2, sfondo compreso
+        if "points" in features:
+            cols.append(np.full((n, 1), np.log1p(cand["n_points"][k]) / 7))   # pochi punti = lontano o coperto
+        if "height" in features:
+            cols.append((d_height[j] / 100)[:, None] if len(j) else np.zeros((1, 1)))   # altezza del box 2D
+        if "ratio" in features:                             # proiezione molto più grande o piccola = profondità sbagliata
+            r = np.log(p_height[k] / d_height[j]).clip(-2, 2)[:, None] if len(j) else np.zeros((1, 1))
+            cols.append(r)
+        if "cross" in features:
+            cols.append(same[k, j][:, None] if len(j) else np.zeros((1, 1)))   # il box 2D è della stessa classe?
+        pairs.append(np.hstack(cols).astype(np.float32))
     return pairs
 
 def pad(pairs):
-    # lista di (p_k, 4) -> tensore (N, P, 4) e maschera (N, P) delle righe vere
-    n, p = len(pairs), max(len(x) for x in pairs)
-    x = np.zeros((n, p, 4), dtype=np.float32)
+    # lista di (p_k, d) -> tensore (N, P, d) e maschera (N, P) delle righe vere
+    n, p, d = len(pairs), max(len(x) for x in pairs), pairs[0].shape[1]
+    x = np.zeros((n, p, d), dtype=np.float32)
     mask = np.zeros((n, p), dtype=bool)
     for k, rows in enumerate(pairs):
         x[k, :len(rows)] = rows
@@ -119,9 +146,9 @@ def pad(pairs):
 # ================================================================ rete
 
 class Clocs(nn.Module):
-    def __init__(self):
+    def __init__(self, n_in=4):
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Linear(16, 32), nn.ReLU(),
+        self.mlp = nn.Sequential(nn.Linear(n_in, 16), nn.ReLU(), nn.Linear(16, 32), nn.ReLU(),
                                  nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 1))   # stessa MLP per ogni coppia
 
     def forward(self, x, mask):
@@ -144,17 +171,19 @@ def get_state():
     if STATE is None:
         torch.set_num_threads(1)                            # run.py lancia già un processo per core
         saved = torch.load(MODEL_PATH, map_location="cpu")
-        model = Clocs()
+        features = saved.get("features", [])
+        model = Clocs(n_inputs(features))
         model.load_state_dict(saved["weights"])
         cands, cand_classes = load_candidates("val")
-        STATE = model.eval(), saved["thresholds"], saved["det2d"], cands, cand_classes
+        STATE = model.eval(), saved["thresholds"], saved["det2d"], features, cands, cand_classes
     return STATE
 
 def detect(i, calib):
-    model, thresholds, source, cands, cand_classes = get_state()
-    boxes, classes, s3d = decode_candidates(cands[i], cand_classes)
+    model, thresholds, source, features, cands, cand_classes = get_state()
+    cand = decode_candidates(cands[i], cand_classes)
+    boxes, classes = cand["boxes"], cand["classes"]
     if len(boxes) == 0:
         return np.zeros((0, 7)), [], np.zeros(0)
-    scores = fused_scores(model, frame_pairs(boxes, classes, s3d, calib, image_size(i), load_det2d(i, source)))
+    scores = fused_scores(model, frame_pairs(cand, calib, image_size(i), load_det2d(i, source), features))
     keep = [k for k in range(len(boxes)) if scores[k] >= thresholds[classes[k]]]
     return boxes[keep].reshape(-1, 7), [classes[k] for k in keep], scores[keep]

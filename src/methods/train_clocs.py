@@ -8,7 +8,7 @@ sys.path[:0] = [str(HERE.parent), str(HERE)]
 import numpy as np
 import torch
 
-from clocs import (DET2D, MODEL_PATH, Clocs, decode_candidates, frame_pairs, fused_scores, image_size,
+from clocs import (DET2D, FEATURES, MODEL_PATH, Clocs, decode_candidates, frame_pairs, fused_scores, image_size,
                    load_candidates, load_det2d, pad)
 from config import CLASSES, IOU_THRESH, NEIGHBOR
 from evaluation.iou import iou_3d
@@ -25,9 +25,10 @@ THRESHOLDS = np.round(np.arange(0.05, 1.0, 0.01), 2)
 
 # ================================================================ dati di training
 
-def frame_data(i, cand, cand_classes, source):
+def frame_data(i, cand, cand_classes, source, features=()):
     calib = load_calib(i)
-    boxes, classes, s3d = decode_candidates(cand, cand_classes)
+    dec = decode_candidates(cand, cand_classes)
+    boxes, classes, s3d = dec["boxes"], dec["classes"], dec["s3d"]
     gt_b, gt_c, gt_ign = gt_boxes(i, calib)
     ious = iou_table(boxes, gt_b, iou_3d)                   # candidati x GT, una volta sola
 
@@ -47,7 +48,7 @@ def frame_data(i, cand, cand_classes, source):
         per_class[c] = {"det": det, "valid": valid,
                         "iou_v": ious[np.ix_(det, valid)], "iou_i": ious[np.ix_(det, ignored)]}
 
-    pairs = frame_pairs(boxes, classes, s3d, calib, image_size(i), load_det2d(i, source))
+    pairs = frame_pairs(dec, calib, image_size(i), load_det2d(i, source), features)
     return {"frame": i, "pairs": pairs, "target": target, "weight": weight, "s3d": s3d, "per_class": per_class}
 
 
@@ -59,7 +60,7 @@ def train_model(frames, seed=0):
     x, mask = pad(pairs)
     y = torch.from_numpy(np.concatenate([f["target"] for f in frames]))
     w = torch.from_numpy(np.concatenate([f["weight"] for f in frames]))
-    model = Clocs()
+    model = Clocs(x.shape[2])                               # tante entrate quante colonne
     opt = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     for epoch in range(EPOCHS):
@@ -102,13 +103,14 @@ def cross_val_scores(frames):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--det2d", choices=sorted(DET2D), default="c2", help="cache dei box 2D (coco = fallback)")
+    ap.add_argument("--features", nargs="*", choices=FEATURES, default=[], help="feature oltre alle 4 di base")
     args = ap.parse_args()
 
     cands, cand_classes = load_candidates("train_holdout")
-    frames = [frame_data(i, cands[i], cand_classes, args.det2d) for i in sorted(cands)]
+    frames = [frame_data(i, cands[i], cand_classes, args.det2d, args.features) for i in sorted(cands)]
     n = sum(len(f["target"]) for f in frames)
     pos = sum(f["target"].sum() for f in frames)
-    print(f"{len(frames)} frame, {n} candidati, {int(pos)} positivi, 2D da {args.det2d}")
+    print(f"{len(frames)} frame, {n} candidati, {int(pos)} positivi, 2D da {args.det2d}, feature extra {args.features}")
 
     oof = cross_val_scores(frames)
     fused = best_thresholds(frames, oof)
@@ -120,7 +122,7 @@ def main():
 
     model, loss = train_model(frames)                       # rete finale su tutti i 300 frame
     torch.save({"weights": model.state_dict(), "thresholds": {c: fused[c][0] for c in CLASSES},
-                "det2d": args.det2d}, MODEL_PATH)
+                "det2d": args.det2d, "features": args.features}, MODEL_PATH)
     print(f"\nrete finale: loss {loss:.4f}, salvata in {MODEL_PATH}")
 
 
