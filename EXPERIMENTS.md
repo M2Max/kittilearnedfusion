@@ -157,8 +157,129 @@ is the fusion's 38 Pedestrian training examples, not the camera.
 | C2-s | 0.080 (0.205) | **0.366 (0.466)** | 0.300 (0.350) |
 | **FL-n** | **0.587** (0.671) | 0.356 (0.390) | **0.463 (0.503)** |
 
-Runtime: the `s/frame` column of `results/val/comparison.md` shows 0.00 for C2-s and FL-n because their inputs are
-cached; the real cost is L2 (~1.05 s per frame on the Mac) plus C2 (~0.33 s on the GPU), plus SGBM for C2-s.
+Runtime: do not use the `s/frame` column of `results/val/comparison.md`. It shows 0.00 for C2-s and FL-n because
+their inputs are cached, and the project 2 values were measured with 10 frames running in parallel, which inflates
+them. The real latencies are in §6.
+
+## 6. Inference latency on the M4 MacBook
+
+`scripts/benchmark_latency.py`: 100 random val frames (seed 0), one frame at a time, each pipeline alone in its
+own process, 3 warm-up frames, files already in the OS cache, calibration loaded beforehand. Time runs from
+reading the frame's files to the final detections. MacBook with Apple M4 (10 cores, 16 GB); the machine was not
+fully idle (load average about 3 at the start). C2-s and FL-n are sums of separately measured parts, frame by frame.
+
+| Pipeline | Mean (ms) | Std | Median | p95 | Max | FPS | CPU cores used | Peak RAM (MB) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| L1 | 407 | 79 | 397 | 537 | 638 | 2.46 | 1.0 | 289 |
+| C1 | 495 | 100 | 509 | 627 | 910 | 2.02 | 1.1 | 384 |
+| FE | 429 | 77 | 410 | 563 | 696 | 2.33 | 1.1 | 407 |
+| FM | 452 | 77 | 442 | 580 | 662 | 2.21 | 1.1 | 404 |
+| FL-c | 897 | 135 | 923 | 1090 | 1213 | 1.12 | 1.0 | 385 |
+| L2 | 428 | 84 | 424 | 565 | 666 | 2.33 | 1.1 | 334 |
+| C2, 2D only (MPS) | 289 | 5 | 289 | 293 | 334 | 3.45 | 0.1 | 674 + 2198 GPU |
+| C2, 2D only (CPU) | 563 | 72 | 551 | 582 | 1135 | 1.78 | 2.3 | 2048 |
+| C2-s (MPS) | 315 | 6 | 314 | 321 | 365 | 3.18 | 0.2 | as C2 + 438 |
+| C2-s (CPU) | 588 | 72 | 576 | 610 | 1164 | 1.70 | 2.3 | as C2 + 438 |
+| FL-n (MPS) | 719 | 85 | 713 | 856 | 961 | 1.39 | 0.7 | L2 + C2 + 253 |
+| FL-n (CPU) | 992 | 107 | 979 | 1161 | 1583 | 1.01 | 1.8 | L2 + C2 + 253 |
+| **FL-n ‖, L2 on CPU + C2 on GPU** | **445** | 94 | 434 | 616 | 769 | 2.25 | 1.2 | 960 + GPU |
+| FL-n ‖, both on CPU | 726 | 43 | 715 | 804 | 894 | 1.38 | 2.7 | 2285 |
+| FL-c ‖, L1 + C1 on two cores | 678 | 101 | 683 | 824 | 934 | 1.47 | 1.7 | 563 |
+| FM ‖, floor + stereo cloud on two cores | 422 | 75 | 411 | 544 | 627 | 2.37 | 1.2 | 802 |
+
+Rows marked ‖ are measured end to end with the two sensor branches running at the same time, in two processes:
+the main one sends the frame to the side process, computes its own branch, waits for the other, then fuses. The
+side process's L2 candidates equal the cached ones on 25 frames, and the live fused detections match the saved
+run. FE has no ‖ row: its LiDAR branch before the merge is a 1 ms file read, so there is nothing to overlap.
+
+Stage means (ms):
+
+| Stage | Time | Used by |
+|---|---:|---|
+| LiDAR file read | 1 | L1, FE, FM, FL-c, L2, FL-n |
+| Image read + PNG decode | 7 per image | C1, FE, FM, FL-c (two images), C2, C2-s (two), FL-n (one) |
+| Classical proposals (RANSAC floor, BEV grid, clustering, boxes) | 406 | L1, L2, FL-n; similar in C1, FE, FM |
+| PointNet on the proposals | 21 | L2, FL-n |
+| SGBM disparity | 15 | C1, FE, FM, FL-c, C2-s |
+| Faster R-CNN inference at ×1.5 scale | 281 MPS / 555 CPU | C2, C2-s, FL-n |
+| Stereo lifting of the C2 boxes | 5 | C2-s |
+| Fusion step (projection, pairs, MLP, thresholds) | 1 | FL-n |
+
+Cost against gain (3D F1 on val):
+
+| Comparison | Extra time | Time × | Δ Car | Δ Pedestrian | Δ Cyclist |
+|---|---:|---:|---:|---:|---:|
+| L2 vs L1 (learned decision on the same proposals) | +21 ms | 1.05 | +0.270 | +0.344 | +0.369 |
+| FL-n (MPS) vs L2 | +290 ms | 1.68 | +0.016 | −0.002 | +0.040 |
+| FL-n (CPU) vs L2 | +564 ms | 2.32 | +0.016 | −0.002 | +0.040 |
+| **FL-n ‖ (L2 CPU, C2 GPU) vs L2** | **+16 ms** | **1.04** | +0.016 | −0.002 | +0.040 |
+| FL-n ‖ (both on CPU) vs L2 | +298 ms | 1.70 | +0.016 | −0.002 | +0.040 |
+| FL-c vs L1 | +489 ms | 2.20 | +0.093 | +0.016 | +0.070 |
+| FL-c ‖ vs L1 | +271 ms | 1.67 | +0.093 | +0.016 | +0.070 |
+| FE vs L1 | +21 ms | 1.05 | +0.002 | +0.001 | +0.005 |
+| FM vs L1 | +45 ms | 1.11 | +0.006 | −0.001 | −0.005 |
+| FM ‖ vs L1 | +14 ms | 1.04 | +0.006 | −0.001 | −0.005 |
+| C2-s (MPS) vs C1 | −180 ms | 0.64 | −0.029 | +0.363 | +0.289 |
+
+- The fusion logic itself is free (1 ms). What fusion costs is running a second detector: run one after the
+  other, +290 ms on the GPU, i.e. 68% more time than L2, for +0.016 Car and +0.040 Cyclist.
+- Run concurrently on different hardware, that cost almost disappears: with L2 on one CPU core and C2 on the
+  GPU, FL-n takes 445 ms against L2's 428 ms (+16 ms, +4%). C2 finishes first (298 ms) and the pipeline waits
+  145 ms for L2, so the LiDAR branch sets the latency. The price is hardware and memory, not time: about 1 GB of
+  RAM plus 2.2 GB of GPU memory, against 0.3 GB for L2.
+- Concurrency on the CPU alone helps much less. With C2 on the CPU, FL-n ‖ takes 726 ms: C2 slows from 563 to
+  725 ms and L2 from 428 to 481 ms when they share the CPU. FL-c ‖ gains 219 ms (897 → 678) but both its branches
+  slow down too (L1 407 → 555 ms, C1 495 → 591 ms). FM ‖ gains 30 ms.
+- The best value by far is L2 over L1: 21 ms of PointNet for +0.27 to +0.37 F1.
+- 95% of L2's time, and 56% of FL-n's, is the classical proposal stage inherited from L1 (single core, Python).
+  It is the first thing to optimise, before either network.
+- The camera branch is the steadier one: C2 on MPS varies by 5 ms, the LiDAR pipelines by about 80 ms with the
+  scene (number of points and clusters).
+- No pipeline is real-time for KITTI's 10 Hz sensors (100 ms per frame): the fastest, C2-s, runs at 3.2 FPS.
+
+## 7. Power and energy on the M4 MacBook
+
+`scripts/benchmark_latency.py --power`: 20 frames per pipeline (the first 20 of the latency sample), sensor
+branches concurrent wherever possible, on battery. CPU and GPU power come from Apple's `powermetrics`
+(`sudo powermetrics --samplers cpu_power,gpu_power -i 200`), averaged over each pipeline's time window; a 15 s
+idle window gives the baseline (CPU 0.60 W, GPU 0.06 W). Energy per frame = average CPU + GPU power × time per
+frame. These are the SoC's CPU and GPU only: memory, display and the rest of the laptop are not included. The GPU
+figures agree with Apple's unprivileged energy counter within 5%.
+
+| Pipeline | ms / frame | CPU (W) | GPU (W) | CPU + GPU (W) | Energy / frame (J) | Above idle (J) |
+|---|---:|---:|---:|---:|---:|---:|
+| L1 | 411 | 6.67 | 0.05 | 6.72 | 2.76 | 2.49 |
+| C1 | 512 | 6.96 | 0.06 | 7.02 | 3.60 | 3.26 |
+| FE | 407 | 6.92 | 0.06 | 6.98 | 2.85 | 2.58 |
+| FM ‖ (two CPU cores) | 426 | 6.91 | 0.05 | 6.97 | 2.97 | 2.69 |
+| FL-c ‖ (two CPU cores) | 689 | 7.84 | 0.05 | 7.89 | 5.43 | 4.98 |
+| L2 | 429 | 6.55 | 0.05 | 6.60 | 2.83 | 2.55 |
+| C2, 2D only, on GPU | 313 | 1.68 | 14.12 | 15.80 | 4.95 | 4.74 |
+| C2, 2D only, on CPU | 536 | 9.71 | 0.01 | 9.71 | 5.21 | 4.86 |
+| C2-s ‖ (stereo on CPU, C2 on GPU) | 289 | 1.59 | 14.59 | 16.18 | 4.68 | 4.49 |
+| **FL-n ‖ (L2 on CPU, C2 on GPU)** | 427 | 6.23 | 9.47 | 15.70 | **6.70** | 6.42 |
+
+Energy against gain (3D F1 on val):
+
+| Comparison | Extra energy / frame | Energy × | Δ Car | Δ Pedestrian | Δ Cyclist |
+|---|---:|---:|---:|---:|---:|
+| L2 vs L1 | +0.07 J | 1.03 | +0.270 | +0.344 | +0.369 |
+| **FL-n ‖ vs L2** | **+3.87 J** | **2.37** | +0.016 | −0.002 | +0.040 |
+| FL-c ‖ vs L1 | +2.67 J | 1.97 | +0.093 | +0.016 | +0.070 |
+| FE vs L1 | +0.08 J | 1.03 | +0.002 | +0.001 | +0.005 |
+| FM ‖ vs L1 | +0.21 J | 1.08 | +0.006 | −0.001 | −0.005 |
+| C2-s ‖ vs C1 | +1.08 J | 1.30 | −0.029 | +0.363 | +0.289 |
+
+- Concurrency hides the fusion's cost in time, not in energy. FL-n ‖ has L2's latency (427 vs 429 ms) but draws
+  15.7 W against 6.6 W and uses 2.4 times the energy per frame, for +0.016 Car and +0.040 Cyclist.
+- The camera network is the expensive part: one C2 inference costs about 5 J, more than a whole L2 frame (2.8 J),
+  on the GPU or on the CPU. The GPU is faster (313 vs 536 ms) but draws more (15.8 vs 9.7 W), so the energy per
+  frame is nearly the same.
+- L2 over L1 is almost free in energy too (+3%) for the largest F1 gain of all.
+- In FL-n ‖ the GPU averages 9.5 W, not 14 W, because it sits idle about 130 ms per frame waiting for L2.
+- C2-s ‖ is the cheapest way to detect pedestrians well: 4.7 J per frame for the best Pedestrian F1, against
+  6.7 J for FL-n.
+- The single-core classical pipelines all draw about 6.7–7 W: one performance core at full speed.
 
 ## Reproduce
 
@@ -171,4 +292,6 @@ cached; the real cost is L2 (~1.05 s per frame on the Mac) plus C2 (~0.33 s on t
 .venv/bin/python src/run.py FL-n
 .venv/bin/python src/run.py C2-s
 .venv/bin/python src/compare.py
+.venv/bin/python scripts/benchmark_latency.py          # latency table, needs ../kitticlassicfusion
+.venv/bin/python scripts/benchmark_latency.py --power  # power table, with sudo powermetrics running (see --help)
 ```
