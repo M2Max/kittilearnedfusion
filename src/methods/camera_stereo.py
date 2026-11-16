@@ -60,17 +60,17 @@ def measure_box(box, depth, calib, cls):
         psi_pca = float(np.arctan2(vecs[1, -1], vecs[0, -1]))   # direzione di massima estensione
     return z, surface, bottom[2], psi_pca, len(pts)
 
-def lift_frame(i):
-    z2d = np.load(C2_CACHE / f"{i:06d}.npz")
+def lift_boxes(det2d, left, right, calib, depth=None):
+    # box 2D di C2 (boxes, labels, scores) + coppia stereo (o profondità già pronta) -> misure stereo dei box
+    boxes2d, labels2d, scores2d = det2d
     out = {"labels": [], "scores": [], "boxes2d": [], "depth": [], "surface": [], "z_bottom": [], "psi_pca": [],
            "n_points": []}
-    if len(z2d["boxes"]):
-        calib = load_calib(i)
-        left, right = load_stereo_pair(i)
-        f, _, _, baseline = stereo_params(calib)
-        depth = remove_flying_pixels(disparity_to_depth(compute_disparity(left, right), f, baseline), MAX_JUMP)
+    if len(boxes2d):
+        if depth is None:
+            f, _, _, baseline = stereo_params(calib)
+            depth = remove_flying_pixels(disparity_to_depth(compute_disparity(left, right), f, baseline), MAX_JUMP)
         h, w = depth.shape
-        for box, cls, s in zip(z2d["boxes"], z2d["labels"], z2d["scores"]):
+        for box, cls, s in zip(boxes2d, labels2d, scores2d):
             box = np.clip(box, 0, [w, h, w, h])
             m = measure_box(box, depth, calib, str(cls))
             if m is None:
@@ -78,11 +78,16 @@ def lift_frame(i):
             for k, v in zip(["labels", "scores", "boxes2d", "depth", "surface", "z_bottom", "psi_pca", "n_points"],
                             [str(cls), s, box, *m]):
                 out[k].append(v)
-    np.savez(LIFTED / f"{i:06d}.npz",
-             labels=np.array(out["labels"], dtype="<U10"), scores=np.array(out["scores"], dtype=np.float32),
-             boxes2d=np.array(out["boxes2d"], dtype=np.float32).reshape(-1, 4),
-             depth=np.array(out["depth"]), surface=np.array(out["surface"]).reshape(-1, 3),
-             z_bottom=np.array(out["z_bottom"]), psi_pca=np.array(out["psi_pca"]), n_points=np.array(out["n_points"]))
+    return {"labels": np.array(out["labels"], dtype="<U10"), "scores": np.array(out["scores"], dtype=np.float32),
+            "boxes2d": np.array(out["boxes2d"], dtype=np.float32).reshape(-1, 4), "depth": np.array(out["depth"]),
+            "surface": np.array(out["surface"]).reshape(-1, 3), "z_bottom": np.array(out["z_bottom"]),
+            "psi_pca": np.array(out["psi_pca"]), "n_points": np.array(out["n_points"])}
+
+def lift_frame(i):
+    z2d = np.load(C2_CACHE / f"{i:06d}.npz")
+    left, right = load_stereo_pair(i) if len(z2d["boxes"]) else (None, None)
+    np.savez(LIFTED / f"{i:06d}.npz", **lift_boxes((z2d["boxes"], z2d["labels"], z2d["scores"]), left, right,
+                                                    load_calib(i)))
     return i
 
 def single_thread():
