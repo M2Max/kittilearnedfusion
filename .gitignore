@@ -24,3 +24,7 @@ __pycache__/
 
 CLAUDE.md
 ARCHITECTURE.md
+
+# --- presentazione: sorgenti solo in locale ---
+presentation/figures/
+presentation/Project_Report.tex
